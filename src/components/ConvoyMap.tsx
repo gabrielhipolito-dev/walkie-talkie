@@ -145,8 +145,9 @@ export default function ConvoyMap({
   localCallsign,
   peerCallsign,
 }: ConvoyMapProps) {
-  const [radarMode, setRadarMode] = useState(false);
+  const [radarMode, setRadarMode] = useState(true);
   const [mapStyle, setMapStyle] = useState<MapTileStyle>('dark');
+  const [showMapDataWarning, setShowMapDataWarning] = useState(false);
 
   useEffect(() => {
     fixLeafletIcons();
@@ -225,12 +226,47 @@ export default function ConvoyMap({
       <div className="relative h-full w-full flex flex-col items-center justify-center bg-zinc-950 rounded-2xl border border-zinc-800 p-4">
         {/* Switch back to Map */}
         <button
-          onClick={() => setRadarMode(false)}
+          onClick={() => setShowMapDataWarning(true)}
           className="absolute top-2.5 right-2.5 z-10 text-xs font-bold text-cyan-400 hover:text-cyan-300 bg-zinc-900/90 border border-zinc-700/80 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition active:scale-95 shadow-lg backdrop-blur cursor-pointer"
         >
           <span>🗺️</span>
           <span>Show Map</span>
         </button>
+
+        {showMapDataWarning && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm p-5">
+            <div className="w-full max-w-xs rounded-2xl border border-amber-500/40 bg-zinc-900 p-4 shadow-2xl">
+              <div className="flex items-center gap-2 text-amber-400">
+                <span className="text-xl">⚠️</span>
+                <h2 className="text-sm font-bold uppercase tracking-wide">
+                  Live Map Uses Data
+                </h2>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-300">
+                Map tiles download continuously while you pan or zoom. On a
+                cellular or metered connection, this can use significant data.
+                Radar mode is available with nearly zero tile usage.
+              </p>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setShowMapDataWarning(false)}
+                  className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-400 transition active:scale-95"
+                >
+                  Stay in Radar
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMapDataWarning(false);
+                    setRadarMode(false);
+                  }}
+                  className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-xs font-bold text-amber-300 transition active:scale-95"
+                >
+                  Use Live Map
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="absolute top-2.5 left-2.5 z-10 text-[11px] font-mono uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-0.5 rounded-lg">
           RADAR MODE (ZERO TILE DATA)

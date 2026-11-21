@@ -235,31 +235,24 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
     // Receive remote audio track
     pc.ontrack = (e) => {
       const stream = e.streams[0] || new MediaStream([e.track]);
+      e.track.enabled = true;
 
       if (!remoteAudioRef.current) {
         const audio = document.createElement('audio');
         audio.autoplay = true;
         // iOS Safari inline playback attribute
         audio.setAttribute('playsinline', 'true');
+        audio.setAttribute('controls', 'false');
+        audio.volume = 1;
         remoteAudioRef.current = audio;
       }
 
       remoteAudioRef.current.srcObject = stream;
-      remoteAudioRef.current.play().catch(() => {
-        // Fallback or retry
+      remoteAudioRef.current.muted = false;
+      remoteAudioRef.current.volume = 1;
+      void remoteAudioRef.current.play().catch((err) => {
+        console.warn('Remote audio playback blocked:', err);
       });
-
-      // Route through Web Audio context destination for maximum mobile clarity
-      try {
-        const ctx = getAudioContext();
-        if (ctx.state === 'suspended') {
-          ctx.resume();
-        }
-        const source = ctx.createMediaStreamSource(stream);
-        source.connect(ctx.destination);
-      } catch {
-        // Handled by HTMLAudioElement
-      }
     };
 
     // Add local mic audio track (muted by default for PTT)

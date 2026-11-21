@@ -25,6 +25,7 @@ export type PingType = 'gas' | 'traffic' | 'pullover' | 'allclear';
 export interface ConvoyState {
   status: ConnectionStatus;
   peerCallsign: string | null;
+  peerCallsigns: string[];
   isTransmitting: boolean;
   peerTransmitting: boolean;
   localPosition: GeoPosition | null;
@@ -46,6 +47,7 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
   const [state, setState] = useState<ConvoyState>({
     status: 'Searching for Convoy',
     peerCallsign: null,
+    peerCallsigns: [],
     isTransmitting: false,
     peerTransmitting: false,
     localPosition: null,
@@ -60,8 +62,10 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const remoteAudioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const analyserRef = useRef<{
     analyser: AnalyserNode;
     cleanup: () => void;
@@ -69,10 +73,9 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
   const animFrameRef = useRef<number>(0);
   const geoWatchRef = useRef<number | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
-  const makingOfferRef = useRef(false);
-  const ignoreOfferRef = useRef(false);
-  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
-  const isPoliteRef = useRef<boolean>(true);
+  const makingOfferRefs = useRef<Map<string, boolean>>(new Map());
+  const ignoreOfferRefs = useRef<Map<string, boolean>>(new Map());
+  const pendingCandidatesRefs = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const myJoinTimeRef = useRef<number>(0);
 
   // ─── Screen Wake Lock API ─────────────────────────────────────
@@ -181,15 +184,14 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
   }, []);
 
   // ─── Create RTCPeerConnection ────────────────────────────────
-  const createPeerConnection = useCallback(() => {
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+  const createPeerConnection = useCallback((peerCallsign: string) => {
+    const existingPc = peerConnectionsRef.current.get(peerCallsign);
+    if (existingPc) return existingPc;
 
     const pc = new RTCPeerConnection({
       iceServers: getIceServers(),
     });
+    peerConnectionsRef.current.set(peerCallsign, pc);
     pcRef.current = pc;
 
     // Send local ICE candidates
@@ -202,6 +204,7 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
             type: 'ice-candidate',
             candidate: e.candidate.toJSON(),
             from: callsign,
+            to: peerCallsign,
           },
         });
       }
@@ -214,7 +217,7 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
     // W3C Perfect Negotiation offer creation
     pc.onnegotiationneeded = async () => {
       try {
-        makingOfferRef.current = true;
+        makingOfferRefs.current.set(peerCallsign, true);
         await pc.setLocalDescription();
         channelRef.current?.send({
           type: 'broadcast',
@@ -223,12 +226,13 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
             type: 'sdp',
             sdp: pc.localDescription,
             from: callsign,
+            to: peerCallsign,
           },
         });
       } catch (err) {
         console.error('WebRTC negotiation error:', err);
       } finally {
-        makingOfferRef.current = false;
+        makingOfferRefs.current.set(peerCallsign, false);
       }
     };
 
@@ -237,20 +241,22 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
       const stream = e.streams[0] || new MediaStream([e.track]);
       e.track.enabled = true;
 
-      if (!remoteAudioRef.current) {
-        const audio = document.createElement('audio');
+      let audio = remoteAudioElementsRef.current.get(peerCallsign);
+      if (!audio) {
+        audio = document.createElement('audio');
         audio.autoplay = true;
         // iOS Safari inline playback attribute
         audio.setAttribute('playsinline', 'true');
         audio.setAttribute('controls', 'false');
         audio.volume = 1;
         remoteAudioRef.current = audio;
+        remoteAudioElementsRef.current.set(peerCallsign, audio);
       }
 
-      remoteAudioRef.current.srcObject = stream;
-      remoteAudioRef.current.muted = false;
-      remoteAudioRef.current.volume = 1;
-      void remoteAudioRef.current.play().catch((err) => {
+      audio.srcObject = stream;
+      audio.muted = false;
+      audio.volume = 1;
+      void audio.play().catch((err) => {
         console.warn('Remote audio playback blocked:', err);
       });
     };
@@ -273,21 +279,28 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
       sdp?: RTCSessionDescriptionInit;
       candidate?: RTCIceCandidateInit;
       from: string;
+      to?: string;
     }) => {
       if (payload.from === callsign) return;
+      if (payload.to && payload.to !== callsign) return;
 
-      let pc = pcRef.current;
+      let pc = peerConnectionsRef.current.get(payload.from);
       if (!pc) {
-        pc = createPeerConnection();
+        pc = createPeerConnection(payload.from);
       }
 
       if (payload.type === 'sdp' && payload.sdp) {
         const offerCollision =
           payload.sdp.type === 'offer' &&
-          (makingOfferRef.current || pc.signalingState !== 'stable');
+          (makingOfferRefs.current.get(payload.from) ||
+            pc.signalingState !== 'stable');
 
-        ignoreOfferRef.current = !isPoliteRef.current && offerCollision;
-        if (ignoreOfferRef.current) {
+        const isPolite = callsign < payload.from;
+        ignoreOfferRefs.current.set(
+          payload.from,
+          !isPolite && offerCollision
+        );
+        if (ignoreOfferRefs.current.get(payload.from)) {
           return;
         }
 
@@ -302,8 +315,10 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
           }
 
           // Flush queued candidates
-          while (pendingCandidatesRef.current.length > 0) {
-            const candidate = pendingCandidatesRef.current.shift();
+          const pendingCandidates =
+            pendingCandidatesRefs.current.get(payload.from) || [];
+          while (pendingCandidates.length > 0) {
+            const candidate = pendingCandidates.shift();
             if (candidate) {
               await pc.addIceCandidate(candidate);
             }
@@ -318,6 +333,7 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
                 type: 'sdp',
                 sdp: pc.localDescription,
                 from: callsign,
+                to: payload.from,
               },
             });
           }
@@ -329,10 +345,13 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
           if (pc.remoteDescription) {
             await pc.addIceCandidate(payload.candidate);
           } else {
-            pendingCandidatesRef.current.push(payload.candidate);
+            const pendingCandidates =
+              pendingCandidatesRefs.current.get(payload.from) || [];
+            pendingCandidates.push(payload.candidate);
+            pendingCandidatesRefs.current.set(payload.from, pendingCandidates);
           }
         } catch (err) {
-          if (!ignoreOfferRef.current) {
+          if (!ignoreOfferRefs.current.get(payload.from)) {
             console.error('ICE candidate error:', err);
           }
         }
@@ -523,54 +542,55 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
       );
 
       const memberCount = members.length;
-      const myRank = members.findIndex((m) => m.callsign === callsign);
-
-      // Strict enforcement: if more than 2 cars and we joined 3rd or later
-      if (memberCount > 2 && myRank >= 2) {
-        setState((s) => ({
-          ...s,
-          roomFull: true,
-          errorMessage:
-            'Room is full (Maximum 2 cars allowed). Please use a different room code or PIN.',
-        }));
-        return;
-      }
-
-      const peer = members.find((m) => m.callsign !== callsign);
+      const peers = members
+        .filter((member) => member.callsign !== callsign)
+        .map((member) => member.callsign);
+      const peer = peers.length > 0 ? peers[0] : null;
 
       setState((s) => ({
         ...s,
         roomMemberCount: memberCount,
-        roomFull: memberCount > 2,
-        peerCallsign: peer?.callsign || null,
+        roomFull: false,
+        errorMessage: null,
+        peerCallsign: peer,
+        peerCallsigns: peers,
         status: peer ? s.status : 'Searching for Convoy',
       }));
 
-      // When peer is present, establish RTCPeerConnection
-      if (peer) {
-        isPoliteRef.current = callsign < peer.callsign;
-        if (!pcRef.current) {
-          createPeerConnection();
+      peers.forEach((peerCallsign) => {
+        if (!peerConnectionsRef.current.has(peerCallsign)) {
+          createPeerConnection(peerCallsign);
         }
-      }
+      });
     });
 
     channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
       const left = leftPresences as unknown as { callsign: string }[];
-      const peerLeft = left.some((p) => p.callsign !== callsign);
-      if (peerLeft) {
-        if (pcRef.current) {
-          pcRef.current.close();
-          pcRef.current = null;
-        }
-        setState((s) => ({
+      left.forEach((peer) => {
+        if (peer.callsign === callsign) return;
+        const pc = peerConnectionsRef.current.get(peer.callsign);
+        pc?.close();
+        peerConnectionsRef.current.delete(peer.callsign);
+        makingOfferRefs.current.delete(peer.callsign);
+        ignoreOfferRefs.current.delete(peer.callsign);
+        pendingCandidatesRefs.current.delete(peer.callsign);
+        remoteAudioElementsRef.current.get(peer.callsign)?.pause();
+        remoteAudioElementsRef.current.delete(peer.callsign);
+      });
+
+      setState((s) => {
+        const peerCallsigns = s.peerCallsigns.filter(
+          (peerCallsign) => !left.some((peer) => peer.callsign === peerCallsign)
+        );
+        return {
           ...s,
-          status: 'Searching for Convoy',
-          peerCallsign: null,
+          status: peerCallsigns.length > 0 ? s.status : 'Searching for Convoy',
+          peerCallsign: peerCallsigns[0] || null,
+          peerCallsigns,
           peerTransmitting: false,
-          peerPosition: null,
-        }));
-      }
+          peerPosition: peerCallsigns.length > 0 ? s.peerPosition : null,
+        };
+      });
     });
 
     // WebRTC Signaling
@@ -646,6 +666,16 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
         pcRef.current.close();
         pcRef.current = null;
       }
+      peerConnectionsRef.current.forEach((pc) => pc.close());
+      peerConnectionsRef.current.clear();
+      makingOfferRefs.current.clear();
+      ignoreOfferRefs.current.clear();
+      pendingCandidatesRefs.current.clear();
+      remoteAudioElementsRef.current.forEach((audio) => {
+        audio.pause();
+        audio.srcObject = null;
+      });
+      remoteAudioElementsRef.current.clear();
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
         localStreamRef.current = null;

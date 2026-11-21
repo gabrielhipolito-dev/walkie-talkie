@@ -800,7 +800,11 @@ function Dashboard({
             <span className="text-cyan-400 font-bold">{callsign}</span>
             <span className="text-zinc-600">↔</span>
             <span className="text-orange-400 font-bold">
-              {effectivePeerCallsign || 'Waiting…'}
+              {isDemoMode
+                ? effectivePeerCallsign
+                : radio.roomMemberCount > 0
+                  ? `${radio.roomMemberCount} vehicle${radio.roomMemberCount === 1 ? '' : 's'} in lobby`
+                  : 'Waiting…'}
             </span>
           </div>
 
@@ -846,7 +850,9 @@ function Dashboard({
           <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">
             {effectivePeerCallsign
               ? 'Synchronizing GPS coordinates…'
-              : 'Waiting for Car 2 to enter room…'}
+              : radio.roomMemberCount > 1
+                ? 'Syncing convoy vehicles…'
+                : 'Waiting for vehicles to enter lobby…'}
           </span>
         )}
       </section>

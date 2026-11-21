@@ -579,6 +579,13 @@ function Dashboard({
   const pttRef = useRef<HTMLButtonElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
+  const handleDashboardDisconnect = useCallback(() => {
+    radio.disconnect();
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    onDisconnect();
+  }, [radio, onDisconnect]);
+
   // Simulated peer car telemetry for Demo mode
   const [demoPeerPos, setDemoPeerPos] = useState<GeoPosition | null>(() => {
     if (!isDemoMode) return null;
@@ -632,6 +639,22 @@ function Dashboard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDemoMode]);
+
+  useEffect(() => {
+    if (isDemoMode) return;
+
+    const disconnectRadio = radio.disconnect;
+    const handlePageExit = () => {
+      disconnectRadio();
+    };
+
+    window.addEventListener('pagehide', handlePageExit);
+    window.addEventListener('beforeunload', handlePageExit);
+    return () => {
+      window.removeEventListener('pagehide', handlePageExit);
+      window.removeEventListener('beforeunload', handlePageExit);
+    };
+  }, [isDemoMode, radio.disconnect]);
 
   // Desktop Spacebar PTT test support
   useEffect(() => {
@@ -746,7 +769,7 @@ function Dashboard({
             {radio.errorMessage}
           </p>
           <button
-            onClick={onDisconnect}
+            onClick={handleDashboardDisconnect}
             className="px-6 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-sm transition"
           >
             Return to Lobby
@@ -809,7 +832,7 @@ function Dashboard({
           </div>
 
           <button
-            onClick={onDisconnect}
+            onClick={handleDashboardDisconnect}
             title="Leave Convoy"
             className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition cursor-pointer"
           >

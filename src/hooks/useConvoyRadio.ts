@@ -77,6 +77,7 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
   const ignoreOfferRefs = useRef<Map<string, boolean>>(new Map());
   const pendingCandidatesRefs = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const myJoinTimeRef = useRef<number>(0);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   // ─── Screen Wake Lock API ─────────────────────────────────────
   const acquireWakeLock = useCallback(async () => {
@@ -641,6 +642,28 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
       }, 4500);
     });
 
+    channel.on('broadcast', { event: 'leave' }, ({ payload }) => {
+      if (!payload?.callsign || payload.callsign === callsign) return;
+      const peerCallsign = payload.callsign as string;
+      const pc = peerConnectionsRef.current.get(peerCallsign);
+      pc?.close();
+      peerConnectionsRef.current.delete(peerCallsign);
+      remoteAudioElementsRef.current.get(peerCallsign)?.pause();
+      remoteAudioElementsRef.current.delete(peerCallsign);
+      setState((s) => {
+        const peerCallsigns = s.peerCallsigns.filter(
+          (name) => name !== peerCallsign
+        );
+        return {
+          ...s,
+          peerCallsign: peerCallsigns[0] || null,
+          peerCallsigns,
+          peerTransmitting: false,
+          peerPosition: peerCallsigns.length > 0 ? s.peerPosition : null,
+        };
+      });
+    });
+
     await channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         await channel.track({
@@ -651,7 +674,10 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
     });
 
     // Teardown function
-    return () => {
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       document.removeEventListener('visibilitychange', handleVisChange);
       if (geoWatchRef.current !== null) {
         navigator.geolocation.clearWatch(geoWatchRef.current);
@@ -684,9 +710,19 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
         wakeLockRef.current.release().catch(() => {});
         wakeLockRef.current = null;
       }
+      channel.send({
+        type: 'broadcast',
+        event: 'leave',
+        payload: { callsign },
+      });
+      void channel.untrack();
       channel.unsubscribe();
       supabase.removeChannel(channel);
+      channelRef.current = null;
+      cleanupRef.current = null;
     };
+    cleanupRef.current = cleanup;
+    return cleanup;
   }, [
     callsign,
     channelName,
@@ -697,9 +733,14 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
     startMicMeter,
   ]);
 
+  const disconnect = useCallback(() => {
+    cleanupRef.current?.();
+  }, []);
+
   return {
     ...state,
     initialize,
+    disconnect,
     startTransmitting,
     stopTransmitting,
     sendPing,

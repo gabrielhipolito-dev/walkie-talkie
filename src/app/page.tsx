@@ -1,69 +1,687 @@
-import Image from "next/image";
+// src/app/page.tsx
+'use client';
 
-export default function Home() {
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
+import { useConvoyRadio, type PingType } from '@/hooks/useConvoyRadio';
+import { haversineDistance, formatDistance } from '@/lib/geo';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import { getAudioContext } from '@/lib/radioAudio';
+
+const ConvoyMap = dynamic(() => import('@/components/ConvoyMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="h-full w-full flex items-center justify-center bg-zinc-950 rounded-xl border border-zinc-800">
+      <div className="text-zinc-500 text-sm font-mono flex items-center gap-2">
+        <svg
+          className="animate-spin h-4 w-4 text-cyan-400"
+          viewBox="0 0 24 24"
+          fill="none"
+        >
+          <circle
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="3"
+            className="opacity-25"
+          />
+          <path
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            className="opacity-75"
+          />
+        </svg>
+        Loading live convoy telemetry…
+      </div>
+    </div>
+  ),
+});
+
+// SHA-256 hash helper for secure room name derivation
+async function sha256(message: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ─── Connection Status Badge Styles ─────────────────────────────
+function statusBadgeStyle(status: string): {
+  bg: string;
+  text: string;
+  dot: string;
+} {
+  switch (status) {
+    case 'Connected P2P':
+      return {
+        bg: 'bg-emerald-500/15 border-emerald-500/30',
+        text: 'text-emerald-400',
+        dot: 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]',
+      };
+    case 'Relayed via TURN':
+      return {
+        bg: 'bg-amber-500/15 border-amber-500/30',
+        text: 'text-amber-400',
+        dot: 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]',
+      };
+    case 'Reconnecting':
+      return {
+        bg: 'bg-rose-500/15 border-rose-500/30',
+        text: 'text-rose-400',
+        dot: 'bg-rose-400 animate-pulse shadow-[0_0_8px_rgba(251,113,133,0.8)]',
+      };
+    default:
+      return {
+        bg: 'bg-zinc-800/80 border-zinc-700/60',
+        text: 'text-zinc-400',
+        dot: 'bg-zinc-400 animate-ping',
+      };
+  }
+}
+
+// ─── Quick-Ping Definitions ─────────────────────────────────────
+const PING_ITEMS: Record<
+  PingType,
+  { label: string; emoji: string; buttonBg: string; bannerBg: string }
+> = {
+  gas: {
+    label: 'Gas Stop',
+    emoji: '⛽',
+    buttonBg: 'bg-amber-600 hover:bg-amber-500 active:bg-amber-400 border-amber-500/40',
+    bannerBg: 'bg-amber-600 border-amber-400',
+  },
+  traffic: {
+    label: 'Traffic / Checkpoint',
+    emoji: '🚧',
+    buttonBg: 'bg-red-700 hover:bg-red-600 active:bg-red-500 border-red-500/40',
+    bannerBg: 'bg-red-700 border-red-400',
+  },
+  pullover: {
+    label: 'Pull Over',
+    emoji: '🅿️',
+    buttonBg: 'bg-blue-700 hover:bg-blue-600 active:bg-blue-500 border-blue-500/40',
+    bannerBg: 'bg-blue-700 border-blue-400',
+  },
+  allclear: {
+    label: 'All Clear',
+    emoji: '✅',
+    buttonBg: 'bg-emerald-700 hover:bg-emerald-600 active:bg-emerald-500 border-emerald-500/40',
+    bannerBg: 'bg-emerald-700 border-emerald-400',
+  },
+};
+
+// ─── Lobby Component ────────────────────────────────────────────
+function Lobby({
+  onConnect,
+}: {
+  onConnect: (callsign: string, channelName: string) => void;
+}) {
+  const [callsign, setCallsign] = useState('Car 1');
+  const [roomCode, setRoomCode] = useState('convoy-alpha');
+  const [pin, setPin] = useState('7788');
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleConnectClick = async () => {
+    if (!callsign.trim()) {
+      setError('Please enter your vehicle Callsign.');
+      return;
+    }
+    if (!roomCode.trim()) {
+      setError('Please enter a Room Code.');
+      return;
+    }
+    if (pin.length !== 4) {
+      setError('Please enter a 4-digit security PIN.');
+      return;
+    }
+
+    setConnecting(true);
+    setError(null);
+
+    try {
+      // 1. Mobile gesture requirement 1: Unlock/resume global AudioContext
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') {
+        await ctx.resume().catch(() => {});
+      }
+
+      // 2. Mobile gesture requirement 2: Request microphone permission
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        await navigator.mediaDevices
+          .getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          })
+          .catch((err) => {
+            console.warn('Microphone permission check:', err.message);
+          });
+      }
+
+      // 3. Mobile gesture requirement 3: Request geolocation permission
+      if ('geolocation' in navigator) {
+        await new Promise<void>((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            () => resolve(),
+            () => resolve(),
+            { timeout: 3000 }
+          );
+        });
+      }
+
+      // 4. Mobile gesture requirement 4: Screen Wake Lock
+      if ('wakeLock' in navigator) {
+        await navigator.wakeLock.request('screen').catch(() => {});
+      }
+
+      // Derive secure channel name from SHA-256(roomCode:pin)
+      const secret = `${roomCode.trim().toLowerCase()}:${pin.trim()}`;
+      const hash = await sha256(secret);
+      const derivedChannel = `convoy-${hash.slice(0, 16)}`;
+
+      onConnect(callsign.trim(), derivedChannel);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Connection failed';
+      setError(msg);
+      setConnecting(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
+    <div className="min-h-dvh bg-zinc-950 flex flex-col items-center justify-center p-4 select-none">
+      <div className="w-full max-w-sm space-y-5">
+        {/* Header / Branding */}
+        <div className="text-center space-y-1.5">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 mb-1 shadow-[0_0_20px_rgba(34,211,238,0.2)]">
+            <svg
+              className="w-8 h-8 text-cyan-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.858 15.355-5.858 21.213 0"
+              />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-black text-white tracking-tight uppercase">
+            Convoy PTT
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-xs text-zinc-400">
+            Private 2-Car Push-to-Talk &amp; Live Convoy Radar
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+
+        {/* Configuration Notice */}
+        {!isSupabaseConfigured && (
+          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
+            <div className="font-semibold flex items-center gap-1.5">
+              <span>⚠️</span>
+              <span>Supabase Keys Optional for Local Testing</span>
+            </div>
+            <p className="text-[11px] text-amber-300/80 leading-relaxed">
+              Add <code className="bg-amber-950 px-1 py-0.5 rounded text-white">NEXT_PUBLIC_SUPABASE_URL</code> to <code className="bg-amber-950 px-1 py-0.5 rounded text-white">.env.local</code> for multi-device realtime cellular sync.
+            </p>
+          </div>
+        )}
+
+        {/* Form Fields */}
+        <div className="space-y-3.5 bg-zinc-900/60 p-5 rounded-2xl border border-zinc-800/80 shadow-xl">
+          <div>
+            <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
+              Vehicle Callsign
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Lead Car, Scout, Car 1"
+              value={callsign}
+              onChange={(e) => setCallsign(e.target.value)}
+              maxLength={24}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
+              Convoy Room Code
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. desert-run-2026"
+              value={roomCode}
+              onChange={(e) => setRoomCode(e.target.value)}
+              maxLength={32}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
+              4-Digit Security PIN
+            </label>
+            <input
+              type="tel"
+              inputMode="numeric"
+              pattern="[0-9]{4}"
+              placeholder="••••"
+              value={pin}
+              onChange={(e) => {
+                const clean = e.target.value.replace(/\D/g, '').slice(0, 4);
+                setPin(clean);
+              }}
+              maxLength={4}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white text-center text-2xl tracking-[0.4em] placeholder-zinc-700 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-mono font-bold"
+            />
+          </div>
         </div>
-      </main>
+
+        {error && (
+          <div className="p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs text-center font-medium">
+            {error}
+          </div>
+        )}
+
+        {/* Connect Button */}
+        <button
+          onClick={handleConnectClick}
+          disabled={connecting}
+          className="w-full bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-400 disabled:bg-zinc-800 text-white font-bold py-4 rounded-2xl transition-all text-base tracking-wider uppercase shadow-[0_0_20px_rgba(6,182,212,0.35)] flex items-center justify-center gap-2"
+        >
+          {connecting ? (
+            <>
+              <svg
+                className="animate-spin h-5 w-5 text-white"
+                viewBox="0 0 24 24"
+                fill="none"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                  className="opacity-25"
+                />
+                <path
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                  className="opacity-75"
+                />
+              </svg>
+              <span>Engaging Radio Link…</span>
+            </>
+          ) : (
+            <>
+              <span>🛰️</span>
+              <span>Connect to Convoy</span>
+            </>
+          )}
+        </button>
+
+        {/* Security & Capability Footnote */}
+        <p className="text-[11px] text-zinc-500 text-center leading-relaxed">
+          Initializes Web Audio, Mic, GPS Telemetry &amp; Screen Wake Lock.
+          <br />
+          Private SHA-256 room channel · Strict 2-car convoy limit.
+        </p>
+      </div>
     </div>
+  );
+}
+
+// ─── Dashboard Component ────────────────────────────────────────
+function Dashboard({
+  callsign,
+  channelName,
+  onDisconnect,
+}: {
+  callsign: string;
+  channelName: string;
+  onDisconnect: () => void;
+}) {
+  const radio = useConvoyRadio({ callsign, channelName });
+  const pttRef = useRef<HTMLButtonElement>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  // Initialize on mount
+  useEffect(() => {
+    let unmounted = false;
+    radio.initialize().then((cleanup) => {
+      if (unmounted) {
+        cleanup();
+      } else {
+        cleanupRef.current = cleanup;
+      }
+    });
+
+    return () => {
+      unmounted = true;
+      cleanupRef.current?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Desktop Spacebar PTT test support
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && !radio.isTransmitting) {
+        e.preventDefault();
+        radio.startTransmitting();
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        radio.stopTransmitting();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [radio]);
+
+  // Touch & Pointer Capture handlers for mobile
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      try {
+        pttRef.current?.setPointerCapture(e.pointerId);
+      } catch {
+        // Safe fallback
+      }
+      radio.startTransmitting();
+    },
+    [radio]
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      try {
+        pttRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        // Safe fallback
+      }
+      radio.stopTransmitting();
+    },
+    [radio]
+  );
+
+  // Real-time distance calculation
+  const distance = useMemo(() => {
+    if (radio.localPosition && radio.peerPosition) {
+      return haversineDistance(
+        radio.localPosition.lat,
+        radio.localPosition.lng,
+        radio.peerPosition.lat,
+        radio.peerPosition.lng
+      );
+    }
+    return null;
+  }, [radio.localPosition, radio.peerPosition]);
+
+  const badge = statusBadgeStyle(radio.status);
+
+  // Volume ring scale expansion driven by AnalyserNode RMS energy
+  const ringScale = radio.isTransmitting ? 1 + radio.micLevel * 0.45 : 1;
+
+  return (
+    <div className="h-dvh w-full bg-zinc-950 flex flex-col overflow-hidden select-none relative">
+      {/* ── Room Full Modal ── */}
+      {radio.roomFull && radio.errorMessage && (
+        <div className="absolute inset-0 z-[100] bg-zinc-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+          <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-3xl mb-4">
+            🚫
+          </div>
+          <h2 className="text-xl font-bold text-white uppercase tracking-tight mb-2">
+            Convoy Room Full
+          </h2>
+          <p className="text-sm text-zinc-400 max-w-xs mb-6">
+            {radio.errorMessage}
+          </p>
+          <button
+            onClick={onDisconnect}
+            className="px-6 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-sm transition"
+          >
+            Return to Lobby
+          </button>
+        </div>
+      )}
+
+      {/* ── INCOMING TRANSMISSION Pulsing Banner ── */}
+      {radio.peerTransmitting && (
+        <div className="absolute top-0 left-0 right-0 z-50 bg-red-600 px-4 py-2.5 text-center shadow-lg shadow-red-600/30 animate-pulse flex items-center justify-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
+          <span className="text-white font-black text-sm uppercase tracking-widest font-mono">
+            INCOMING AUDIO · {radio.peerCallsign || 'PEER CAR'}
+          </span>
+        </div>
+      )}
+
+      {/* ── Visual Quick-Ping Alert Banner ── */}
+      {radio.lastPingReceived && (
+        <div
+          className={`absolute top-0 left-0 right-0 z-50 ${
+            PING_ITEMS[radio.lastPingReceived.type].bannerBg
+          } border-b px-4 py-3 text-center shadow-2xl flex items-center justify-center gap-2`}
+        >
+          <span className="text-2xl">{PING_ITEMS[radio.lastPingReceived.type].emoji}</span>
+          <span className="text-white font-extrabold text-base tracking-wide uppercase font-mono">
+            {radio.lastPingReceived.from}: {PING_ITEMS[radio.lastPingReceived.type].label}
+          </span>
+        </div>
+      )}
+
+      {/* ── Top Bar: Connection Badge, Callsign Tag & Disconnect ── */}
+      <header className="px-3 pt-2 pb-1.5 flex items-center justify-between shrink-0 border-b border-zinc-900 bg-zinc-950/80 backdrop-blur z-20">
+        <div className="flex items-center gap-2">
+          <div
+            className={`flex items-center gap-2 px-2.5 py-1 rounded-full border text-xs font-semibold ${badge.bg} ${badge.text}`}
+          >
+            <span className={`w-2 h-2 rounded-full ${badge.dot}`} />
+            <span>{radio.status}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <div className="text-xs font-mono text-zinc-400 flex items-center gap-1.5 bg-zinc-900/80 px-2.5 py-1 rounded-lg border border-zinc-800">
+            <span className="text-cyan-400 font-bold">{callsign}</span>
+            <span className="text-zinc-600">↔</span>
+            <span className="text-orange-400 font-bold">
+              {radio.peerCallsign || 'Waiting…'}
+            </span>
+          </div>
+
+          <button
+            onClick={onDisconnect}
+            title="Leave Convoy"
+            className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+              />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      {/* ── Distance & Telemetry Readout Bar ── */}
+      <section className="px-3 py-1.5 text-center shrink-0 flex items-baseline justify-center gap-3 bg-zinc-950">
+        {distance !== null ? (
+          <>
+            <span className="text-3xl font-black text-white font-mono tracking-tight drop-shadow-md">
+              {formatDistance(distance)}
+            </span>
+            <span className="text-xs font-mono font-bold text-zinc-400 uppercase tracking-widest">
+              APART
+            </span>
+            {radio.peerPosition && (
+              <span className="text-xs font-mono text-orange-400 font-semibold bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded">
+                Peer: {radio.peerPosition.speedKmh} km/h
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">
+            {radio.peerCallsign
+              ? 'Synchronizing GPS coordinates…'
+              : 'Waiting for Car 2 to enter room…'}
+          </span>
+        )}
+      </section>
+
+      {/* ── Section 1: Map & Radar View (~45% viewport height) ── */}
+      <section className="flex-[45] min-h-0 px-2.5 pb-1 relative">
+        <ConvoyMap
+          localPosition={radio.localPosition}
+          peerPosition={radio.peerPosition}
+          localCallsign={callsign}
+          peerCallsign={radio.peerCallsign}
+        />
+      </section>
+
+      {/* ── Section 2: 4-Button Dashboard Quick-Ping Bar (~15% height) ── */}
+      <section className="flex-[15] min-h-[68px] max-h-[82px] px-2.5 py-1.5 flex items-stretch gap-2 shrink-0">
+        {(Object.entries(PING_ITEMS) as [PingType, typeof PING_ITEMS[PingType]][]).map(
+          ([type, item]) => (
+            <button
+              key={type}
+              onClick={() => radio.sendPing(type)}
+              className={`flex-1 rounded-xl ${item.buttonBg} border text-white font-bold text-xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-md`}
+            >
+              <span className="text-xl leading-none">{item.emoji}</span>
+              <span className="leading-tight text-center text-[11px] font-mono tracking-tight">
+                {item.label}
+              </span>
+            </button>
+          )
+        )}
+      </section>
+
+      {/* ── Section 3: Oversized PTT HOLD-TO-TALK Button (~40% height) ── */}
+      <section className="flex-[40] min-h-0 flex flex-col items-center justify-center pb-safe relative">
+        <div className="relative flex items-center justify-center">
+          {/* Audio Analyser Energy Halo */}
+          <div
+            className="absolute rounded-full transition-transform duration-75 pointer-events-none"
+            style={{
+              width: 210,
+              height: 210,
+              transform: `scale(${ringScale})`,
+              background: radio.isTransmitting
+                ? `radial-gradient(circle, transparent 58%, rgba(34,211,238,${
+                    0.25 + radio.micLevel * 0.5
+                  }) 100%)`
+                : 'radial-gradient(circle, transparent 65%, rgba(63,63,70,0.2) 100%)',
+              boxShadow: radio.isTransmitting
+                ? `0 0 ${25 + radio.micLevel * 50}px rgba(34,211,238,${
+                    0.35 + radio.micLevel * 0.45
+                  })`
+                : 'none',
+            }}
+          />
+
+          {/* Secondary ripple ring during transmission */}
+          {radio.isTransmitting && (
+            <div
+              className="absolute w-56 h-56 rounded-full border border-cyan-400/40 animate-ping pointer-events-none"
+              style={{ animationDuration: '1.2s' }}
+            />
+          )}
+
+          {/* Main PTT Button */}
+          <button
+            ref={pttRef}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onContextMenu={(e) => e.preventDefault()}
+            className={`relative z-10 w-44 h-44 rounded-full font-black text-xl transition-all touch-none select-none flex flex-col items-center justify-center gap-1 shadow-2xl cursor-pointer ${
+              radio.isTransmitting
+                ? 'bg-cyan-400 text-zinc-950 scale-95 shadow-[0_0_35px_rgba(34,211,238,0.7)]'
+                : 'bg-zinc-900 text-zinc-200 hover:bg-zinc-800 active:bg-cyan-400 active:text-zinc-950 border-4 border-zinc-700/80 shadow-[0_10px_30px_rgba(0,0,0,0.8)]'
+            }`}
+            style={{
+              WebkitTouchCallout: 'none',
+              WebkitUserSelect: 'none',
+            }}
+          >
+            <svg
+              className={`w-9 h-9 transition-transform ${
+                radio.isTransmitting ? 'scale-110' : ''
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+              />
+            </svg>
+            <span className="text-xs uppercase tracking-[0.2em] font-mono font-bold">
+              {radio.isTransmitting ? 'TRANSMITTING' : 'HOLD TO TALK'}
+            </span>
+            <span className="text-[10px] text-zinc-400 font-mono tracking-widest uppercase">
+              {radio.isTransmitting ? 'TX ON' : 'SPACEBAR / TAP'}
+            </span>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ─── Root Home Component ────────────────────────────────────────
+export default function Home() {
+  const [session, setSession] = useState<{
+    callsign: string;
+    channelName: string;
+  } | null>(null);
+
+  const handleConnect = useCallback(
+    (callsign: string, channelName: string) => {
+      setSession({ callsign, channelName });
+    },
+    []
+  );
+
+  const handleDisconnect = useCallback(() => {
+    setSession(null);
+  }, []);
+
+  if (!session) {
+    return <Lobby onConnect={handleConnect} />;
+  }
+
+  return (
+    <Dashboard
+      callsign={session.callsign}
+      channelName={session.channelName}
+      onDisconnect={handleDisconnect}
+    />
   );
 }

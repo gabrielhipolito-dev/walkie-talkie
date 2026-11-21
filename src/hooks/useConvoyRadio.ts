@@ -489,6 +489,28 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
       }
       const rawMembers = Object.values(presenceState).flat() as unknown as PresenceMember[];
 
+      const normalizedCallsign = callsign.trim().toLocaleLowerCase();
+      const duplicateCallsign = rawMembers.some((member) => {
+        if (!member.callsign) return false;
+        return (
+          member.callsign.trim().toLocaleLowerCase() === normalizedCallsign &&
+          rawMembers.filter(
+            (other) =>
+              other.callsign?.trim().toLocaleLowerCase() ===
+              normalizedCallsign
+          ).length > 1
+        );
+      });
+
+      if (duplicateCallsign) {
+        setState((s) => ({
+          ...s,
+          roomFull: true,
+          errorMessage: `The vehicle station "${callsign.trim()}" is already in this convoy room. Choose a different station name.`,
+        }));
+        return;
+      }
+
       // Unique by callsign, sort by joinedAt
       const uniqueMap = new Map<string, PresenceMember>();
       rawMembers.forEach((m) => {

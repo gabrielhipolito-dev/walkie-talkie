@@ -125,9 +125,9 @@ function Lobby({
   onConnect: (callsign: string, channelName: string) => void;
   onLaunchDemo: () => void;
 }) {
-  const [callsign, setCallsign] = useState('Car 1');
-  const [roomCode, setRoomCode] = useState('convoy-alpha');
-  const [pin, setPin] = useState('7788');
+  const [callsign, setCallsign] = useState('');
+  const [roomCode, setRoomCode] = useState('');
+  const [pin, setPin] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,14 +206,14 @@ function Lobby({
 
   const handleConnectClick = async () => {
     if (!callsign.trim()) {
-      setError('Please enter your vehicle Callsign.');
+      setError('Please enter your vehicle station name.');
       return;
     }
     if (!roomCode.trim()) {
       setError('Please enter a Room Code.');
       return;
     }
-    if (pin.length !== 4) {
+    if (!/^\d{4}$/.test(pin)) {
       setError('Please enter a 4-digit security PIN.');
       return;
     }
@@ -333,13 +333,14 @@ function Lobby({
         <div className="space-y-3 bg-zinc-900/60 p-4.5 rounded-2xl border border-zinc-800 shadow-xl">
           <div>
             <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
-              Vehicle Callsign
+              Vehicle Station
             </label>
             <input
               type="text"
-              placeholder="e.g. Lead Car, Car 1"
+              placeholder="Enter vehicle station name"
               value={callsign}
               onChange={(e) => setCallsign(e.target.value)}
+              autoComplete="off"
               maxLength={24}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm"
             />
@@ -351,7 +352,7 @@ function Lobby({
             </label>
             <input
               type="text"
-              placeholder="e.g. desert-run-2026"
+              placeholder="Enter convoy room code"
               value={roomCode}
               onChange={(e) => setRoomCode(e.target.value)}
               maxLength={32}
@@ -364,7 +365,7 @@ function Lobby({
               4-Digit Security PIN
             </label>
             <input
-              type="tel"
+              type="password"
               inputMode="numeric"
               pattern="[0-9]{4}"
               placeholder="••••"
@@ -737,7 +738,9 @@ function Dashboard({
             🚫
           </div>
           <h2 className="text-xl font-bold text-white uppercase tracking-tight mb-2">
-            Convoy Room Full
+            {radio.errorMessage?.includes('vehicle station')
+              ? 'Station Name Already Used'
+              : 'Convoy Room Full'}
           </h2>
           <p className="text-sm text-zinc-400 max-w-xs mb-6">
             {radio.errorMessage}

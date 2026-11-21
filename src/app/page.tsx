@@ -4,17 +4,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useConvoyRadio, type PingType } from '@/hooks/useConvoyRadio';
-import { haversineDistance, formatDistance } from '@/lib/geo';
+import { haversineDistance, formatDistance, type GeoPosition } from '@/lib/geo';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { getAudioContext } from '@/lib/radioAudio';
 
 const ConvoyMap = dynamic(() => import('@/components/ConvoyMap'), {
   ssr: false,
   loading: () => (
-    <div className="h-full w-full flex items-center justify-center bg-zinc-950 rounded-xl border border-zinc-800">
-      <div className="text-zinc-500 text-sm font-mono flex items-center gap-2">
+    <div className="h-full w-full min-h-[240px] flex flex-col items-center justify-center bg-zinc-950 rounded-2xl border border-zinc-800 p-6 text-center">
+      <div className="w-10 h-10 rounded-full bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-3">
         <svg
-          className="animate-spin h-4 w-4 text-cyan-400"
+          className="animate-spin h-5 w-5 text-cyan-400"
           viewBox="0 0 24 24"
           fill="none"
         >
@@ -32,8 +32,13 @@ const ConvoyMap = dynamic(() => import('@/components/ConvoyMap'), {
             className="opacity-75"
           />
         </svg>
-        Loading live convoy telemetry…
       </div>
+      <span className="text-white font-mono font-bold text-sm">
+        INITIALIZING DARK MATTER CONVOY MAP
+      </span>
+      <span className="text-zinc-500 text-xs font-mono mt-1">
+        Loading CartoDB vector tiles &amp; GPS layers…
+      </span>
     </div>
   ),
 });
@@ -115,14 +120,89 @@ const PING_ITEMS: Record<
 // ─── Lobby Component ────────────────────────────────────────────
 function Lobby({
   onConnect,
+  onLaunchDemo,
 }: {
   onConnect: (callsign: string, channelName: string) => void;
+  onLaunchDemo: () => void;
 }) {
   const [callsign, setCallsign] = useState('Car 1');
   const [roomCode, setRoomCode] = useState('convoy-alpha');
   const [pin, setPin] = useState('7788');
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // In-App TURN Server Configuration
+  const [showTurnSettings, setShowTurnSettings] = useState(false);
+  const [turnUrlInput, setTurnUrlInput] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return (
+          localStorage.getItem('convoy_turn_url') ||
+          process.env.NEXT_PUBLIC_TURN_URL ||
+          ''
+        );
+      } catch {
+        // ignore
+      }
+    }
+    return process.env.NEXT_PUBLIC_TURN_URL || '';
+  });
+  const [turnUserInput, setTurnUserInput] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return (
+          localStorage.getItem('convoy_turn_user') ||
+          process.env.NEXT_PUBLIC_TURN_USERNAME ||
+          ''
+        );
+      } catch {
+        // ignore
+      }
+    }
+    return process.env.NEXT_PUBLIC_TURN_USERNAME || '';
+  });
+  const [turnCredInput, setTurnCredInput] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return (
+          localStorage.getItem('convoy_turn_cred') ||
+          process.env.NEXT_PUBLIC_TURN_CREDENTIAL ||
+          ''
+        );
+      } catch {
+        // ignore
+      }
+    }
+    return process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '';
+  });
+  const [turnSavedNotice, setTurnSavedNotice] = useState(false);
+
+  const handleSaveTurn = () => {
+    try {
+      if (turnUrlInput.trim()) {
+        localStorage.setItem('convoy_turn_url', turnUrlInput.trim());
+      } else {
+        localStorage.removeItem('convoy_turn_url');
+      }
+      if (turnUserInput.trim()) {
+        localStorage.setItem('convoy_turn_user', turnUserInput.trim());
+      } else {
+        localStorage.removeItem('convoy_turn_user');
+      }
+      if (turnCredInput.trim()) {
+        localStorage.setItem('convoy_turn_cred', turnCredInput.trim());
+      } else {
+        localStorage.removeItem('convoy_turn_cred');
+      }
+      setTurnSavedNotice(true);
+      setTimeout(() => {
+        setTurnSavedNotice(false);
+        setShowTurnSettings(false);
+      }, 1000);
+    } catch {
+      // ignore
+    }
+  };
 
   const handleConnectClick = async () => {
     if (!callsign.trim()) {
@@ -194,10 +274,10 @@ function Lobby({
 
   return (
     <div className="min-h-dvh bg-zinc-950 flex flex-col items-center justify-center p-4 select-none">
-      <div className="w-full max-w-sm space-y-5">
+      <div className="w-full max-w-sm space-y-4">
         {/* Header / Branding */}
-        <div className="text-center space-y-1.5">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 mb-1 shadow-[0_0_20px_rgba(34,211,238,0.2)]">
+        <div className="text-center space-y-1">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 mb-1 shadow-[0_0_20px_rgba(34,211,238,0.25)]">
             <svg
               className="w-8 h-8 text-cyan-400"
               fill="none"
@@ -216,36 +296,52 @@ function Lobby({
             Convoy PTT
           </h1>
           <p className="text-xs text-zinc-400">
-            Private 2-Car Push-to-Talk &amp; Live Convoy Radar
+            Push-to-Talk Walkie-Talkie &amp; Live Convoy Radar
+          </p>
+        </div>
+
+        {/* Feature Capabilities Pill Card */}
+        <div className="bg-zinc-900/80 p-3.5 rounded-2xl border border-zinc-800 space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-base">🗺️</span>
+              <span className="font-bold text-white">Live Dark Matter Convoy Map</span>
+            </div>
+            <span className="text-[10px] font-mono font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 rounded-md">
+              INCLUDED
+            </span>
+          </div>
+          <p className="text-[11px] text-zinc-400 leading-relaxed">
+            Realtime GPS car tracking, Haversine vehicle distance, CartoDB dark tiles, and Low-Data Radar view.
           </p>
         </div>
 
         {/* Configuration Notice */}
         {!isSupabaseConfigured && (
-          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs text-amber-300 space-y-1">
             <div className="font-semibold flex items-center gap-1.5">
               <span>⚠️</span>
-              <span>Supabase Keys Optional for Local Testing</span>
+              <span>Supabase Keys Pending</span>
             </div>
             <p className="text-[11px] text-amber-300/80 leading-relaxed">
-              Add <code className="bg-amber-950 px-1 py-0.5 rounded text-white">NEXT_PUBLIC_SUPABASE_URL</code> to <code className="bg-amber-950 px-1 py-0.5 rounded text-white">.env.local</code> for multi-device realtime cellular sync.
+              Add your keys to <code className="bg-amber-950 px-1 py-0.5 rounded text-white font-mono">.env.local</code> for multi-device sync, or use the Instant Map Demo below!
             </p>
           </div>
         )}
 
         {/* Form Fields */}
-        <div className="space-y-3.5 bg-zinc-900/60 p-5 rounded-2xl border border-zinc-800/80 shadow-xl">
+        <div className="space-y-3 bg-zinc-900/60 p-4.5 rounded-2xl border border-zinc-800 shadow-xl">
           <div>
             <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
               Vehicle Callsign
             </label>
             <input
               type="text"
-              placeholder="e.g. Lead Car, Scout, Car 1"
+              placeholder="e.g. Lead Car, Car 1"
               value={callsign}
               onChange={(e) => setCallsign(e.target.value)}
               maxLength={24}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm"
             />
           </div>
 
@@ -259,7 +355,7 @@ function Lobby({
               value={roomCode}
               onChange={(e) => setRoomCode(e.target.value)}
               maxLength={32}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm"
             />
           </div>
 
@@ -278,7 +374,7 @@ function Lobby({
                 setPin(clean);
               }}
               maxLength={4}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-white text-center text-2xl tracking-[0.4em] placeholder-zinc-700 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-mono font-bold"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white text-center text-xl tracking-[0.4em] placeholder-zinc-700 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-mono font-bold"
             />
           </div>
         </div>
@@ -289,49 +385,178 @@ function Lobby({
           </div>
         )}
 
-        {/* Connect Button */}
-        <button
-          onClick={handleConnectClick}
-          disabled={connecting}
-          className="w-full bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-400 disabled:bg-zinc-800 text-white font-bold py-4 rounded-2xl transition-all text-base tracking-wider uppercase shadow-[0_0_20px_rgba(6,182,212,0.35)] flex items-center justify-center gap-2"
-        >
-          {connecting ? (
-            <>
-              <svg
-                className="animate-spin h-5 w-5 text-white"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  className="opacity-25"
-                />
-                <path
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                  className="opacity-75"
-                />
-              </svg>
-              <span>Engaging Radio Link…</span>
-            </>
-          ) : (
-            <>
-              <span>🛰️</span>
-              <span>Connect to Convoy</span>
-            </>
-          )}
-        </button>
+        {/* Buttons: Primary Connect + Instant Demo + TURN Settings */}
+        <div className="space-y-2.5">
+          <button
+            onClick={handleConnectClick}
+            disabled={connecting}
+            className="w-full bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-400 disabled:bg-zinc-800 text-white font-bold py-3.5 rounded-xl transition-all text-sm tracking-wider uppercase shadow-[0_0_20px_rgba(6,182,212,0.35)] flex items-center justify-center gap-2 cursor-pointer"
+          >
+            {connecting ? (
+              <>
+                <svg
+                  className="animate-spin h-4 w-4 text-white"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    className="opacity-25"
+                  />
+                  <path
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    className="opacity-75"
+                  />
+                </svg>
+                <span>Connecting Radio &amp; GPS…</span>
+              </>
+            ) : (
+              <>
+                <span>🛰️</span>
+                <span>Connect to Convoy</span>
+              </>
+            )}
+          </button>
 
-        {/* Security & Capability Footnote */}
-        <p className="text-[11px] text-zinc-500 text-center leading-relaxed">
+          <button
+            onClick={onLaunchDemo}
+            className="w-full bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-700 border border-zinc-700 text-zinc-200 font-bold py-2.5 rounded-xl transition-all text-xs tracking-wider uppercase flex items-center justify-center gap-2 cursor-pointer shadow-md"
+          >
+            <span>🗺️</span>
+            <span>Instant Map &amp; Audio Demo</span>
+          </button>
+
+          <div className="text-center pt-1">
+            <button
+              onClick={() => setShowTurnSettings(true)}
+              className="text-xs font-mono text-zinc-400 hover:text-cyan-400 underline underline-offset-4 transition cursor-pointer"
+            >
+              ⚙️ Cellular TURN Relay Settings
+            </button>
+          </div>
+        </div>
+
+        {/* Footnote */}
+        <p className="text-[10px] text-zinc-500 text-center leading-relaxed">
           Initializes Web Audio, Mic, GPS Telemetry &amp; Screen Wake Lock.
           <br />
           Private SHA-256 room channel · Strict 2-car convoy limit.
         </p>
+
+        {/* ── TURN Settings Modal ── */}
+        {showTurnSettings && (
+          <div className="fixed inset-0 z-50 bg-zinc-950/90 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">📡</span>
+                  <h3 className="text-sm font-bold text-white uppercase font-mono">
+                    Cellular TURN Relay
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setShowTurnSettings(false)}
+                  className="text-zinc-500 hover:text-white text-xs font-mono px-2 py-1 rounded cursor-pointer"
+                >
+                  ✕ CLOSE
+                </button>
+              </div>
+
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                TURN relays voice packets over rural 4G/5G when mobile carriers (Verizon, T-Mobile, AT&amp;T) block direct peer-to-peer UDP connections (Symmetric CGNAT).
+              </p>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-[10px] font-mono text-zinc-400 mb-1 uppercase">
+                    TURN Server URL
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="turn:standard.relay.metered.ca:443"
+                    value={turnUrlInput}
+                    onChange={(e) => setTurnUrlInput(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white placeholder-zinc-700 font-mono focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-mono text-zinc-400 mb-1 uppercase">
+                    TURN Username
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="your-metered-username"
+                    value={turnUserInput}
+                    onChange={(e) => setTurnUserInput(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white placeholder-zinc-700 font-mono focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-mono text-zinc-400 mb-1 uppercase">
+                    TURN Password / Credential
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="••••••••••••"
+                    value={turnCredInput}
+                    onChange={(e) => setTurnCredInput(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white placeholder-zinc-700 font-mono focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-1 flex items-center justify-between text-[11px]">
+                <a
+                  href="https://www.metered.ca/tools/openrelay/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-cyan-400 hover:underline flex items-center gap-1"
+                >
+                  <span>Free 50GB at Metered.ca ↗</span>
+                </a>
+
+                {turnSavedNotice && (
+                  <span className="text-emerald-400 font-bold font-mono">
+                    ✓ SAVED!
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  onClick={handleSaveTurn}
+                  className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider transition cursor-pointer"
+                >
+                  Save Credentials
+                </button>
+                <button
+                  onClick={() => {
+                    setTurnUrlInput('');
+                    setTurnUserInput('');
+                    setTurnCredInput('');
+                    try {
+                      localStorage.removeItem('convoy_turn_url');
+                      localStorage.removeItem('convoy_turn_user');
+                      localStorage.removeItem('convoy_turn_cred');
+                    } catch {}
+                    setTurnSavedNotice(true);
+                    setTimeout(() => setTurnSavedNotice(false), 1200);
+                  }}
+                  className="px-3 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white rounded-xl text-xs font-mono transition cursor-pointer"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -341,18 +566,56 @@ function Lobby({
 function Dashboard({
   callsign,
   channelName,
+  isDemoMode = false,
   onDisconnect,
 }: {
   callsign: string;
   channelName: string;
+  isDemoMode?: boolean;
   onDisconnect: () => void;
 }) {
   const radio = useConvoyRadio({ callsign, channelName });
   const pttRef = useRef<HTMLButtonElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
-  // Initialize on mount
+  // Simulated peer car telemetry for Demo mode
+  const [demoPeerPos, setDemoPeerPos] = useState<GeoPosition | null>(() => {
+    if (!isDemoMode) return null;
+    return {
+      lat: 34.0522 + 0.0035,
+      lng: -118.2437 + 0.0028,
+      speedKmh: 82,
+      heading: 42,
+      updatedAt: 0,
+    };
+  });
+
+  // Initialize real radio link if not in demo mode
   useEffect(() => {
+    if (isDemoMode) {
+      // Initialize Web Audio for local sound testing in Demo mode
+      getAudioContext();
+
+      // Gradually update simulated car position to demonstrate live tracking
+      const interval = setInterval(() => {
+        setDemoPeerPos((prev) => {
+          if (!prev) return null;
+          const deltaLat = (Math.random() - 0.45) * 0.0004;
+          const deltaLng = (Math.random() - 0.45) * 0.0004;
+          const speed = Math.round(75 + Math.random() * 18);
+          return {
+            lat: prev.lat + deltaLat,
+            lng: prev.lng + deltaLng,
+            speedKmh: speed,
+            heading: (prev.heading + Math.round((Math.random() - 0.5) * 8) + 360) % 360,
+            updatedAt: Date.now(),
+          };
+        });
+      }, 2500);
+
+      return () => clearInterval(interval);
+    }
+
     let unmounted = false;
     radio.initialize().then((cleanup) => {
       if (unmounted) {
@@ -367,7 +630,7 @@ function Dashboard({
       cleanupRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isDemoMode]);
 
   // Desktop Spacebar PTT test support
   useEffect(() => {
@@ -419,20 +682,48 @@ function Dashboard({
     [radio]
   );
 
+  // Resolve active telemetry (real or demo)
+  const activeLocalPos = useMemo(() => {
+    if (radio.localPosition) return radio.localPosition;
+    if (isDemoMode) {
+      return {
+        lat: 34.0522,
+        lng: -118.2437,
+        speedKmh: 78,
+        heading: 40,
+        updatedAt: 0,
+      };
+    }
+    return null;
+  }, [radio.localPosition, isDemoMode]);
+
+  const activePeerPos = useMemo(() => {
+    if (isDemoMode) return demoPeerPos;
+    return radio.peerPosition;
+  }, [isDemoMode, demoPeerPos, radio.peerPosition]);
+
+  const effectivePeerCallsign = isDemoMode
+    ? 'Car 2 (Convoy Lead)'
+    : radio.peerCallsign;
+
   // Real-time distance calculation
   const distance = useMemo(() => {
-    if (radio.localPosition && radio.peerPosition) {
+    if (activeLocalPos && activePeerPos) {
       return haversineDistance(
-        radio.localPosition.lat,
-        radio.localPosition.lng,
-        radio.peerPosition.lat,
-        radio.peerPosition.lng
+        activeLocalPos.lat,
+        activeLocalPos.lng,
+        activePeerPos.lat,
+        activePeerPos.lng
       );
     }
     return null;
-  }, [radio.localPosition, radio.peerPosition]);
+  }, [activeLocalPos, activePeerPos]);
 
-  const badge = statusBadgeStyle(radio.status);
+  const effectiveStatus = isDemoMode
+    ? 'Connected P2P'
+    : radio.status;
+
+  const badge = statusBadgeStyle(effectiveStatus);
 
   // Volume ring scale expansion driven by AnalyserNode RMS energy
   const ringScale = radio.isTransmitting ? 1 + radio.micLevel * 0.45 : 1;
@@ -465,7 +756,7 @@ function Dashboard({
         <div className="absolute top-0 left-0 right-0 z-50 bg-red-600 px-4 py-2.5 text-center shadow-lg shadow-red-600/30 animate-pulse flex items-center justify-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
           <span className="text-white font-black text-sm uppercase tracking-widest font-mono">
-            INCOMING AUDIO · {radio.peerCallsign || 'PEER CAR'}
+            INCOMING AUDIO · {effectivePeerCallsign || 'PEER CAR'}
           </span>
         </div>
       )}
@@ -491,8 +782,14 @@ function Dashboard({
             className={`flex items-center gap-2 px-2.5 py-1 rounded-full border text-xs font-semibold ${badge.bg} ${badge.text}`}
           >
             <span className={`w-2 h-2 rounded-full ${badge.dot}`} />
-            <span>{radio.status}</span>
+            <span>{effectiveStatus}</span>
           </div>
+
+          {isDemoMode && (
+            <span className="text-[10px] font-mono font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 rounded">
+              LIVE DEMO
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2.5">
@@ -500,14 +797,14 @@ function Dashboard({
             <span className="text-cyan-400 font-bold">{callsign}</span>
             <span className="text-zinc-600">↔</span>
             <span className="text-orange-400 font-bold">
-              {radio.peerCallsign || 'Waiting…'}
+              {effectivePeerCallsign || 'Waiting…'}
             </span>
           </div>
 
           <button
             onClick={onDisconnect}
             title="Leave Convoy"
-            className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition"
+            className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition cursor-pointer"
           >
             <svg
               className="w-4 h-4"
@@ -536,28 +833,28 @@ function Dashboard({
             <span className="text-xs font-mono font-bold text-zinc-400 uppercase tracking-widest">
               APART
             </span>
-            {radio.peerPosition && (
+            {activePeerPos && (
               <span className="text-xs font-mono text-orange-400 font-semibold bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded">
-                Peer: {radio.peerPosition.speedKmh} km/h
+                Peer: {activePeerPos.speedKmh} km/h
               </span>
             )}
           </>
         ) : (
           <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">
-            {radio.peerCallsign
+            {effectivePeerCallsign
               ? 'Synchronizing GPS coordinates…'
               : 'Waiting for Car 2 to enter room…'}
           </span>
         )}
       </section>
 
-      {/* ── Section 1: Map & Radar View (~45% viewport height) ── */}
-      <section className="flex-[45] min-h-0 px-2.5 pb-1 relative">
+      {/* ── Section 1: Live Leaflet Map & Radar View (~45% viewport height) ── */}
+      <section className="flex-[45] min-h-[250px] px-2.5 pb-1 relative">
         <ConvoyMap
-          localPosition={radio.localPosition}
-          peerPosition={radio.peerPosition}
+          localPosition={activeLocalPos}
+          peerPosition={activePeerPos}
           localCallsign={callsign}
-          peerCallsign={radio.peerCallsign}
+          peerCallsign={effectivePeerCallsign}
         />
       </section>
 
@@ -568,7 +865,7 @@ function Dashboard({
             <button
               key={type}
               onClick={() => radio.sendPing(type)}
-              className={`flex-1 rounded-xl ${item.buttonBg} border text-white font-bold text-xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-md`}
+              className={`flex-1 rounded-xl ${item.buttonBg} border text-white font-bold text-xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-md cursor-pointer`}
             >
               <span className="text-xl leading-none">{item.emoji}</span>
               <span className="leading-tight text-center text-[11px] font-mono tracking-tight">
@@ -580,7 +877,7 @@ function Dashboard({
       </section>
 
       {/* ── Section 3: Oversized PTT HOLD-TO-TALK Button (~40% height) ── */}
-      <section className="flex-[40] min-h-0 flex flex-col items-center justify-center pb-safe relative">
+      <section className="flex-[40] min-h-[170px] flex flex-col items-center justify-center pb-safe relative">
         <div className="relative flex items-center justify-center">
           {/* Audio Analyser Energy Halo */}
           <div
@@ -660,27 +957,42 @@ export default function Home() {
   const [session, setSession] = useState<{
     callsign: string;
     channelName: string;
+    isDemo: boolean;
   } | null>(null);
 
   const handleConnect = useCallback(
     (callsign: string, channelName: string) => {
-      setSession({ callsign, channelName });
+      setSession({ callsign, channelName, isDemo: false });
     },
     []
   );
+
+  const handleLaunchDemo = useCallback(() => {
+    setSession({
+      callsign: 'Car 1 (You)',
+      channelName: 'demo-convoy',
+      isDemo: true,
+    });
+  }, []);
 
   const handleDisconnect = useCallback(() => {
     setSession(null);
   }, []);
 
   if (!session) {
-    return <Lobby onConnect={handleConnect} />;
+    return (
+      <Lobby
+        onConnect={handleConnect}
+        onLaunchDemo={handleLaunchDemo}
+      />
+    );
   }
 
   return (
     <Dashboard
       callsign={session.callsign}
       channelName={session.channelName}
+      isDemoMode={session.isDemo}
       onDisconnect={handleDisconnect}
     />
   );

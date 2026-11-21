@@ -22,7 +22,7 @@
 - **Zero-Latency Peer-to-Peer Voice (`RTCPeerConnection`):** Persistent WebRTC audio channel with microphone track muted by default (`audioTrack.enabled = false`).
 - **Push-to-Talk (PTT) Audio Engine:** Native Web Audio API synthesis—plays a 1200 Hz radio key-up chirp on press, streams live microphone audio, broadcasts an **INCOMING TRANSMISSION** alert banner to the other vehicle, and sounds a realistic bandpass-filtered squelch tail on release (zero audio files needed).
 - **Live Car-to-Car GPS & Haversine Distance:** Streams `{ lat, lng, speedKmh, heading }` every 2 seconds. Calculates accurate vehicle-to-vehicle distance in real-time (`350 m` or `2.4 km`) along with live speeds.
-- **Dark Mode Leaflet Map + Low-Data Radar View:** CartoDB Dark Matter tiles (zero API keys required) with directional car marker chevrons rotated to vehicle heading. Includes a **Low-Data Radar View** toggle for cellular dead zones.
+- **Dark Mode Leaflet Map + Low-Data Radar View:** High-contrast Esri Dark Gray Canvas, Esri Satellite Aerial, and OpenStreetMap layers (**100% free, zero API key required, zero watermarks**) with directional car marker chevrons rotated to vehicle heading. Includes an in-map layer selector (`🌙 Dark`, `🛰️ Sat`, `🗺️ Street`) and a **Low-Data Radar View** toggle for cellular dead zones.
 - **4 Dashboard Quick-Pings:** Large dashboard-safe buttons (`Gas Stop` ⛽, `Traffic / Checkpoint` 🚧, `Pull Over` 🅿️, `All Clear` ✅) sending full-width visual banners and distinct two-tone chimes audible over road noise.
 - **Screen Wake Lock API:** Prevents mobile screens from sleeping on dashboard mounts, with auto-reacquisition on app tab switching (`visibilitychange`).
 - **Strict 2-Car SHA-256 Gate:** Channel name is derived from `SHA-256(roomCode:pin)` so unauthorized eavesdroppers cannot guess room IDs, with strict 2-car peer presence enforcement.
@@ -133,23 +133,40 @@ Simply connect your GitHub repo, set build command to `npm run build`, and confi
 
 ---
 
-## 📡 Step 4: Cellular CGNAT & TURN Server (Optional)
+## 📡 Step 4: Cellular CGNAT & TURN Server Setup (Step-by-Step)
 
 When driving through rural highways, mobile network operators (Verizon, AT&T, T-Mobile, Vodafone, etc.) place cellular phones behind **Symmetric NAT (Carrier-Grade NAT / CGNAT)**.
 
-- **STUN (Free Google STUN included by default):** Works for ~85% of mobile connections where direct UDP hole punching succeeds.
+- **STUN (Free Google STUN included by default):** Works out-of-the-box for ~85% of mobile connections where direct UDP hole punching succeeds.
 - **TURN (Relay):** Guarantees 100% connection success even if both phones are on strict cellular firewalls.
 
-If you ever experience a situation where both cars show `Searching for Convoy` over cellular, add free TURN credentials:
+### How to Get Free TURN Credentials (in 60 seconds):
 
-1. Sign up for a free TURN provider such as **[Metered.ca](https://www.metered.ca/tools/openrelay/)** (50GB free TURN bandwidth/month).
-2. Add your credentials to your `.env.local` or Vercel environment variables:
-   ```env
-   NEXT_PUBLIC_TURN_URL=turn:standard.relay.metered.ca:443
-   NEXT_PUBLIC_TURN_USERNAME=your-username
-   NEXT_PUBLIC_TURN_CREDENTIAL=your-password
-   ```
-3. When relaying through TURN, the top status badge will automatically display `Relayed via TURN` instead of `Connected P2P`.
+1. Go to **[https://www.metered.ca/tools/openrelay/](https://www.metered.ca/tools/openrelay/)**
+2. Click **"Get Started for Free"** and sign up (free 50GB monthly bandwidth, no credit card needed).
+3. In your Metered dashboard under **"TURN Credentials"**:
+   - You will see:
+     - **TURN Server:** `turn:standard.relay.metered.ca:443`
+     - **Username:** (e.g. `c03847291a...`)
+     - **Password / Credential:** (e.g. `abc8192...`)
+
+### How to Apply the Credentials:
+
+#### Option 1: Directly in the App (No Code or Redeploy Needed!)
+1. Open Convoy PTT in your browser or phone.
+2. In the Lobby, click **"⚙️ Cellular TURN Relay Settings"**.
+3. Paste the **Server URL**, **Username**, and **Password**.
+4. Tap **"Save Credentials"**. It automatically saves to your phone's `localStorage` and activates immediately!
+
+#### Option 2: Via `.env.local` or Vercel
+Add to `.env.local` or Vercel Environment Variables:
+```env
+NEXT_PUBLIC_TURN_URL=turn:standard.relay.metered.ca:443
+NEXT_PUBLIC_TURN_USERNAME=your-metered-username
+NEXT_PUBLIC_TURN_CREDENTIAL=your-metered-password
+```
+
+When connected via TURN, the top status badge automatically displays **`Relayed via TURN`** instead of `Connected P2P`.
 
 ---
 

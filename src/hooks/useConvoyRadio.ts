@@ -109,15 +109,31 @@ export function useConvoyRadio({ callsign, channelName }: UseConvoyRadioProps) {
       { urls: 'stun:stun2.l.google.com:19302' },
     ];
 
-    const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
-    const turnUser = process.env.NEXT_PUBLIC_TURN_USERNAME;
-    const turnCred = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+    let turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+    let turnUser = process.env.NEXT_PUBLIC_TURN_USERNAME;
+    let turnCred = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
+    if (typeof window !== 'undefined') {
+      try {
+        const storedUrl = localStorage.getItem('convoy_turn_url');
+        const storedUser = localStorage.getItem('convoy_turn_user');
+        const storedCred = localStorage.getItem('convoy_turn_cred');
+        if (storedUrl) turnUrl = storedUrl;
+        if (storedUser) turnUser = storedUser;
+        if (storedCred) turnCred = storedCred;
+      } catch {
+        // localStorage not available
+      }
+    }
 
     if (turnUrl && turnUser && turnCred) {
+      const urls = turnUrl.includes(',')
+        ? turnUrl.split(',').map((u) => u.trim())
+        : [turnUrl.trim()];
       servers.push({
-        urls: turnUrl,
-        username: turnUser,
-        credential: turnCred,
+        urls,
+        username: turnUser.trim(),
+        credential: turnCred.trim(),
       });
     }
 

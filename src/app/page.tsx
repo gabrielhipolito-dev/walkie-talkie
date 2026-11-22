@@ -117,6 +117,32 @@ const PING_ITEMS: Record<
   },
 };
 
+const VEHICLE_STATIONS = [
+  'Basta Driver Sweet Lover',
+  'God Knows Hudas Not Pay',
+  'Patok Jeepney 3000',
+  'Kamote Rider Pro Max',
+  'Katas ng Shopee',
+  'Walang Preno Gaming',
+  'Sana All Naka-Aircon',
+  'Bayad Po Sa Likod',
+  'Waze Mo Mukha Mo',
+  'Liko Muna Bago Lingon',
+  'Karag-Karag Express',
+  'Barya Lang Po Sa Umaga',
+  'Full Tank Sa Dasal',
+  'Para Po Sa Tabi',
+  'Sasakyan Kita Sa Lahat Ng Gusto Mo',
+] as const;
+
+const CONVOY_ROOMS = [
+  'EDSA Carpool Survivors',
+  'SLEX Pitstop Tambayan',
+  'Basta May Ambush Sa NLEX',
+  'Bulalo Run Tagaytay',
+  'Kahit Saan Basta Libre Gas',
+] as const;
+
 // ─── Lobby Component ────────────────────────────────────────────
 function Lobby({
   onConnect,
@@ -335,29 +361,40 @@ function Lobby({
             <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
               Vehicle Station
             </label>
-            <input
-              type="text"
-              placeholder="Enter vehicle station name"
+            <select
               value={callsign}
               onChange={(e) => setCallsign(e.target.value)}
-              autoComplete="off"
-              maxLength={24}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm"
-            />
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm cursor-pointer"
+            >
+              <option value="" disabled>
+                Pick your vehicle station
+              </option>
+              {VEHICLE_STATIONS.map((station) => (
+                <option key={station} value={station}>
+                  {station}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
             <label className="block text-[11px] font-mono font-bold text-zinc-400 mb-1 uppercase tracking-wider">
               Convoy Room Code
             </label>
-            <input
-              type="text"
-              placeholder="Enter convoy room code"
+            <select
               value={roomCode}
               onChange={(e) => setRoomCode(e.target.value)}
-              maxLength={32}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm"
-            />
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-medium text-sm cursor-pointer"
+            >
+              <option value="" disabled>
+                Pick a convoy room
+              </option>
+              {CONVOY_ROOMS.map((room) => (
+                <option key={room} value={room}>
+                  {room}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>

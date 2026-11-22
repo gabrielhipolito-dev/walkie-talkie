@@ -148,7 +148,12 @@ function Lobby({
   onConnect,
   onLaunchDemo,
 }: {
-  onConnect: (callsign: string, channelName: string) => void;
+  onConnect: (
+    callsign: string,
+    channelName: string,
+    roomCode: string,
+    pin: string
+  ) => void;
   onLaunchDemo: () => void;
 }) {
   const [callsign, setCallsign] = useState('');
@@ -290,7 +295,7 @@ function Lobby({
       const hash = await sha256(secret);
       const derivedChannel = `convoy-${hash.slice(0, 16)}`;
 
-      onConnect(callsign.trim(), derivedChannel);
+      onConnect(callsign.trim(), derivedChannel, roomCode.trim(), pin);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Connection failed';
       setError(msg);
@@ -415,6 +420,21 @@ function Lobby({
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-white text-center text-xl tracking-[0.4em] placeholder-zinc-700 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition font-mono font-bold"
             />
           </div>
+
+          {roomCode && pin.length === 4 && (
+            <div className="rounded-xl bg-cyan-500/10 border border-cyan-500/25 p-3 text-center">
+              <p className="text-[10px] uppercase tracking-widest font-mono font-bold text-cyan-300">
+                Remember these to rejoin
+              </p>
+              <div className="mt-1 flex items-center justify-center gap-3 text-sm font-bold">
+                <span className="text-white">{roomCode}</span>
+                <span className="text-zinc-600">•</span>
+                <span className="text-cyan-300 font-mono tracking-widest">
+                  PIN {pin}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         {error && (
@@ -604,11 +624,15 @@ function Lobby({
 function Dashboard({
   callsign,
   channelName,
+  roomCode,
+  pin,
   isDemoMode = false,
   onDisconnect,
 }: {
   callsign: string;
   channelName: string;
+  roomCode?: string;
+  pin?: string;
   isDemoMode?: boolean;
   onDisconnect: () => void;
 }) {
@@ -890,6 +914,17 @@ function Dashboard({
         </div>
       </header>
 
+      {!isDemoMode && roomCode && pin && (
+        <div className="px-3 py-1.5 bg-cyan-500/5 border-b border-cyan-500/15 text-center">
+          <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-mono">
+            Rejoin with room{' '}
+            <strong className="text-cyan-300">{roomCode}</strong>
+            <span className="mx-2 text-zinc-600">•</span>
+            PIN <strong className="text-cyan-300">{pin}</strong>
+          </span>
+        </div>
+      )}
+
       {/* ── Distance & Telemetry Readout Bar ── */}
       <section className="px-3 py-1.5 text-center shrink-0 flex items-baseline justify-center gap-3 bg-zinc-950">
         {distance !== null ? (
@@ -1026,12 +1061,14 @@ export default function Home() {
   const [session, setSession] = useState<{
     callsign: string;
     channelName: string;
+    roomCode?: string;
+    pin?: string;
     isDemo: boolean;
   } | null>(null);
 
   const handleConnect = useCallback(
-    (callsign: string, channelName: string) => {
-      setSession({ callsign, channelName, isDemo: false });
+    (callsign: string, channelName: string, roomCode: string, pin: string) => {
+      setSession({ callsign, channelName, roomCode, pin, isDemo: false });
     },
     []
   );
@@ -1061,6 +1098,8 @@ export default function Home() {
     <Dashboard
       callsign={session.callsign}
       channelName={session.channelName}
+      roomCode={session.roomCode}
+      pin={session.pin}
       isDemoMode={session.isDemo}
       onDisconnect={handleDisconnect}
     />
